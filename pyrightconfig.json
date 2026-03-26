@@ -1,0 +1,17 @@
+{
+  "include": ["."],
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Windows",
+  "pythonPath": "C:\\Users\\mayan\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+  "extraPaths": ["."],
+  "useLibraryCodeForTypes": true,
+  "typeCheckingMode": "basic",
+  "reportMissingModuleSource": "none",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "pythonVersion": "3.11",
+      "extraPaths": ["."]
+    }
+  ]
+}
