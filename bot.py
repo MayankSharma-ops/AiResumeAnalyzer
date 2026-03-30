@@ -7,8 +7,9 @@ Flow:
 """
 
 import asyncio
-import os
 import logging
+import math
+import os
 from typing import Any
 from telegram import (
     CallbackQuery,
@@ -90,6 +91,122 @@ def _build_analysis_message(result: dict) -> str:
         msg += "\n\n<b>Choose an optimized version:</b>"
 
     return msg
+
+
+def _safe_score(score: Any) -> float | None:
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(value):
+        return None
+
+    return round(min(10.0, max(0.0, value)), 1)
+
+
+def _score_label(score: Any) -> str:
+    safe_score = _safe_score(score)
+    return f"{safe_score:.1f}/10" if safe_score is not None else "N/A"
+
+
+def _score_emoji(score: Any) -> str:
+    safe_score = _safe_score(score)
+    if safe_score is None:
+        return "⚪"
+    if safe_score >= 8:
+        return "ðŸŸ¢"
+    if safe_score >= 6:
+        return "ðŸŸ¡"
+    return "ðŸ”´"
+
+
+def _build_analysis_message(result: dict) -> str:
+    """Format the analysis result into a safe Telegram message."""
+    score = _safe_score(result.get("ats_score"))
+    effective_score = score if score is not None else 0.0
+    emoji = _score_emoji(effective_score)
+    status = "âœ… PASS" if effective_score >= ATS_PASS_THRESHOLD else "âŒ NEEDS IMPROVEMENT"
+
+    msg = f"""
+{emoji} <b>ATS Score: {_score_label(score)}</b> â€” {status}
+
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
+
+âœ… <b>Matched Keywords:</b>
+{', '.join(result['matched_keywords']) if result['matched_keywords'] else 'None found'}
+
+âŒ <b>Missing Keywords:</b>
+{', '.join(result['missing_keywords']) if result['missing_keywords'] else 'All keywords matched!'}
+
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
+
+ðŸ’¡ <b>Suggestions:</b>
+"""
+    for i, suggestion in enumerate(result.get("suggestions", []), 1):
+        msg += f"\n{i}. {suggestion}"
+
+    if effective_score < ATS_PASS_THRESHOLD:
+        msg += "\n\nâ¬‡ï¸ <b>Your score is below the threshold. Let me optimize your CV!</b>"
+        msg += "\n\n<b>Choose an optimized version:</b>"
+    else:
+        msg += "\n\nðŸŽ‰ <b>Great score! You can still optimize further if you'd like.</b>"
+        msg += "\n\n<b>Choose an optimized version:</b>"
+
+    return msg
+
+
+def _score_emoji(score: Any) -> str:
+    safe_score = _safe_score(score)
+    if safe_score is None:
+        return "\u26AA"
+    if safe_score >= 8:
+        return "\U0001F7E2"
+    if safe_score >= 6:
+        return "\U0001F7E1"
+    return "\U0001F534"
+
+
+def _build_analysis_message(result: dict) -> str:
+    """Format the analysis result into a safe Telegram message."""
+    score = _safe_score(result.get("ats_score"))
+    effective_score = score if score is not None else 0.0
+    emoji = _score_emoji(effective_score)
+    status = "PASS" if effective_score >= ATS_PASS_THRESHOLD else "NEEDS IMPROVEMENT"
+
+    msg = f"""
+{emoji} <b>ATS Score: {_score_label(score)}</b> - {status}
+
+<b>Matched Keywords:</b>
+{', '.join(result['matched_keywords']) if result['matched_keywords'] else 'None found'}
+
+<b>Missing Keywords:</b>
+{', '.join(result['missing_keywords']) if result['missing_keywords'] else 'All keywords matched!'}
+
+<b>Suggestions:</b>
+"""
+    for i, suggestion in enumerate(result.get("suggestions", []), 1):
+        msg += f"\n{i}. {suggestion}"
+
+    if effective_score < ATS_PASS_THRESHOLD:
+        msg += "\n\n<b>Your score is below the threshold. Let me optimize your CV!</b>"
+        msg += "\n\n<b>Choose an optimized version:</b>"
+    else:
+        msg += "\n\n<b>Great score! You can still optimize further if you'd like.</b>"
+        msg += "\n\n<b>Choose an optimized version:</b>"
+
+    return msg
+
+
+def _score_emoji(score: Any) -> str:
+    safe_score = _safe_score(score)
+    if safe_score is None:
+        return "[N/A]"
+    if safe_score >= 8:
+        return "[HIGH]"
+    if safe_score >= 6:
+        return "[MID]"
+    return "[LOW]"
 
 
 def _require_message(update: Update) -> Message:
@@ -478,19 +595,21 @@ async def handle_template_choice(update: Update, context: ContextTypes.DEFAULT_T
             version_name=version_key,
         )
 
-        if isinstance(version_report.get("new_score"), (int, float)):
-            new_score = version_report["new_score"]
+        version_score = _safe_score(version_report.get("new_score"))
+        if version_score is not None:
+            new_score = version_score
             improvement = version_report.get("improvement_summary", "")
         else:
             jd_text = user_data["jd_text"]
             rescore_result = rescore_cv(optimized_text, jd_text)
-            new_score = rescore_result.get("new_score", "N/A")
+            new_score = _safe_score(rescore_result.get("new_score"))
             improvement = rescore_result.get("improvement_summary", "")
 
-        old_score = analysis["ats_score"]
+        old_score = _safe_score(analysis.get("ats_score")) or 0.0
         old_emoji = _score_emoji(old_score)
         new_emoji = _score_emoji(new_score) if isinstance(new_score, (int, float)) else "⚪"
 
+        new_emoji = _score_emoji(new_score)
         chat = _require_chat(update)
 
         with open(file_path, "rb") as f:
@@ -501,8 +620,8 @@ async def handle_template_choice(update: Update, context: ContextTypes.DEFAULT_T
                 caption=(
                     f"📄 <b>Your Optimized CV</b>\n\n"
                     f"📊 <b>Score Comparison:</b>\n"
-                    f"   Before: {old_emoji} {old_score}/10\n"
-                    f"   After:  {new_emoji} {new_score}/10\n\n"
+                    f"   Before: {old_emoji} {_score_label(old_score)}\n"
+                    f"   After:  {new_emoji} {_score_label(new_score)}\n\n"
                     f"💬 {improvement}"
                 ),
                 parse_mode="HTML",
