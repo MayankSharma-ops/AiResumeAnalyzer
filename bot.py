@@ -2,7 +2,7 @@
 Telegram Bot — conversational ATS analyzer with inline keyboards.
 
 Flow:
-  /start → Upload CV → Paste JD → Analysis (score + keywords + suggestions)
+  /start → Upload CV → Paste JD (or upload JD as PDF) → Analysis (score + keywords + suggestions)
   → Choose optimized version → Choose template → Download DOCX + new score
 """
 
@@ -132,12 +132,23 @@ def _user_data(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any]:
     return data
 
 
+def _cleanup_user_files(user_data: dict) -> None:
+    """Remove any temp files stored for this user session."""
+    for key in ("cv_file_path", "jd_file_path"):
+        path = user_data.get(key)
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 # ── Bot Handlers ─────────────────────────────────────────────────────────────
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle /start — welcome message."""
-    # Clear any previous data
     user_data = _user_data(context)
+    _cleanup_user_files(user_data)
     user_data.clear()
     message = _require_message(update)
 
@@ -148,9 +159,14 @@ I'll help you beat ATS systems and land interviews!
 
 <b>Here's how it works:</b>
 1️⃣ Upload your CV (PDF or DOCX)
-2️⃣ Paste the Job Description
+2️⃣ Paste the Job Description <i>or upload it as a PDF</i>
 3️⃣ Get your ATS score & analysis
 4️⃣ Download optimized CV in multiple templates
+
+<b>Commands:</b>
+/start — Begin a new session
+/end — End current session
+/help — Show help
 
 📎 <b>Start by uploading your CV file:</b>
 """
@@ -205,8 +221,10 @@ async def handle_cv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await message.reply_text(
             f"✅ CV uploaded successfully! "
             f"({len(cv_text.split())} words extracted)\n\n"
-            f"📋 <b>Now paste the Job Description:</b>\n"
-            f"(Copy the full JD text and send it here)",
+            f"📋 <b>Now provide the Job Description:</b>\n\n"
+            f"You can either:\n"
+            f"• 📝 <b>Paste the JD text</b> directly\n"
+            f"• 📄 <b>Upload the JD as a PDF file</b>",
             parse_mode="HTML",
         )
         return PASTE_JD
@@ -219,6 +237,112 @@ async def handle_cv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return UPLOAD_CV
 
 
+async def handle_jd_pdf_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle JD uploaded as a PDF file — extract text and proceed to analysis."""
+    user_data = _user_data(context)
+    message = _require_message(update)
+    document = message.document
+
+    if not document:
+        await message.reply_text(
+            "⚠️ No file received. Please upload a <b>PDF</b> file or paste the JD as text.",
+            parse_mode="HTML",
+        )
+        return PASTE_JD
+
+    file_name = document.file_name or "jd"
+    ext = os.path.splitext(file_name)[1].lower()
+
+    if ext != ".pdf":
+        await message.reply_text(
+            "⚠️ For the Job Description, only <b>PDF</b> format is supported.\n"
+            "You can also just <b>paste the JD text</b> directly.",
+            parse_mode="HTML",
+        )
+        return PASTE_JD
+
+    await message.reply_text("📥 Downloading JD PDF...")
+
+    file = await document.get_file()
+    user = _require_user(update)
+    file_path = os.path.join(TEMP_DIR, f"jd_{user.id}.pdf")
+    await file.download_to_drive(file_path)
+    user_data["jd_file_path"] = file_path
+
+    try:
+        jd_text = parse_cv(file_path)
+        if not jd_text.strip():
+            await message.reply_text(
+                "⚠️ Could not extract text from the JD PDF. "
+                "It might be image-based or scanned. "
+                "Please paste the JD text directly instead.",
+            )
+            return PASTE_JD
+
+        word_count = len(jd_text.split())
+        if word_count < 20:
+            await message.reply_text(
+                f"⚠️ Extracted text seems too short ({word_count} words). "
+                "Please paste the JD text directly.",
+            )
+            return PASTE_JD
+
+        logger.info(f"JD PDF extracted: {word_count} words")
+
+        # Reuse the same JD analysis flow
+        # Inject jd_text into user_data and trigger analysis
+        user_data["jd_text"] = jd_text
+
+    except Exception as e:
+        logger.error(f"JD PDF parsing error: {e}")
+        await message.reply_text(
+            f"❌ Error reading JD PDF: {str(e)}\n\nPlease paste the JD text directly.",
+        )
+        return PASTE_JD
+
+    # --- Proceed to analysis (same as handle_jd_input) ---
+    processing_msg = await message.reply_text(
+        f"✅ JD PDF extracted! ({word_count} words)\n\n"
+        "⏳ <b>Analyzing your CV against the Job Description...</b>\n\n"
+        "🔍 Extracting keywords...\n"
+        "📊 Calculating ATS score...\n"
+        "💡 Generating suggestions...\n"
+        "📝 Creating optimized versions...\n\n"
+        "This may take 15-30 seconds...",
+        parse_mode="HTML",
+    )
+
+    try:
+        cv_text = user_data["cv_text"]
+        result = analyze_cv(cv_text, jd_text)
+        user_data["analysis"] = result
+
+        analysis_msg = _build_analysis_message(result)
+
+        keyboard = [
+            [InlineKeyboardButton("🎯 ATS-Optimized (Keyword Heavy)", callback_data="ver_ats_heavy")],
+            [InlineKeyboardButton("⚖️ Balanced Professional", callback_data="ver_balanced")],
+            [InlineKeyboardButton("📄 Concise 1-Page", callback_data="ver_concise")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await processing_msg.edit_text(
+            analysis_msg,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+        return CHOOSE_VERSION
+
+    except Exception as e:
+        logger.exception("Gemini analysis error (JD PDF)")
+        await processing_msg.edit_text(
+            f"❌ <b>Analysis failed:</b> {str(e)}\n\n"
+            f"Please try again with /start.",
+            parse_mode="HTML",
+        )
+        return PASTE_JD
+
+
 async def handle_jd_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle JD text input — analyze CV against JD."""
     user_data = _user_data(context)
@@ -228,13 +352,12 @@ async def handle_jd_input(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not jd_text or len(jd_text.strip()) < 20:
         await message.reply_text(
             "⚠️ Job Description seems too short. "
-            "Please paste the complete JD text.",
+            "Please paste the complete JD text, or upload it as a PDF.",
         )
         return PASTE_JD
 
     user_data["jd_text"] = jd_text
 
-    # Processing message
     processing_msg = await message.reply_text(
         "⏳ <b>Analyzing your CV against the Job Description...</b>\n\n"
         "🔍 Extracting keywords...\n"
@@ -246,15 +369,12 @@ async def handle_jd_input(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
     try:
-        # Call Gemini
         cv_text = user_data["cv_text"]
         result = analyze_cv(cv_text, jd_text)
         user_data["analysis"] = result
 
-        # Build and send analysis message
         analysis_msg = _build_analysis_message(result)
 
-        # Version selection buttons
         keyboard = [
             [InlineKeyboardButton("🎯 ATS-Optimized (Keyword Heavy)", callback_data="ver_ats_heavy")],
             [InlineKeyboardButton("⚖️ Balanced Professional", callback_data="ver_balanced")],
@@ -302,7 +422,6 @@ async def handle_version_choice(update: Update, context: ContextTypes.DEFAULT_TY
     user_data["chosen_version"] = version_key
     user_data["chosen_version_label"] = version_label
 
-    # Template selection buttons
     keyboard = []
     for key, (label, _) in TEMPLATES.items():
         keyboard.append([InlineKeyboardButton(label, callback_data=f"tpl_{key}")])
@@ -348,23 +467,25 @@ async def handle_template_choice(update: Update, context: ContextTypes.DEFAULT_T
     )
 
     try:
-        # Get the optimized resume text
         analysis = user_data["analysis"]
         version_key = user_data["chosen_version"]
         optimized_text = analysis["optimized_resumes"][version_key]
+        version_report = analysis.get("version_reports", {}).get(version_key, {})
 
-        # Generate DOCX
         file_path = generate_cv(
             optimized_text,
             template_key,
             version_name=version_key,
         )
 
-        # Re-score the optimized CV
-        jd_text = user_data["jd_text"]
-        rescore_result = rescore_cv(optimized_text, jd_text)
-        new_score = rescore_result.get("new_score", "N/A")
-        improvement = rescore_result.get("improvement_summary", "")
+        if isinstance(version_report.get("new_score"), (int, float)):
+            new_score = version_report["new_score"]
+            improvement = version_report.get("improvement_summary", "")
+        else:
+            jd_text = user_data["jd_text"]
+            rescore_result = rescore_cv(optimized_text, jd_text)
+            new_score = rescore_result.get("new_score", "N/A")
+            improvement = rescore_result.get("improvement_summary", "")
 
         old_score = analysis["ats_score"]
         old_emoji = _score_emoji(old_score)
@@ -372,7 +493,6 @@ async def handle_template_choice(update: Update, context: ContextTypes.DEFAULT_T
 
         chat = _require_chat(update)
 
-        # Send the file
         with open(file_path, "rb") as f:
             await context.bot.send_document(
                 chat_id=chat.id,
@@ -388,7 +508,6 @@ async def handle_template_choice(update: Update, context: ContextTypes.DEFAULT_T
                 parse_mode="HTML",
             )
 
-        # Action buttons
         keyboard = [
             [InlineKeyboardButton("🔄 Try Different Template", callback_data="action_template")],
             [InlineKeyboardButton("📝 Try Different Version", callback_data="action_version")],
@@ -401,22 +520,23 @@ async def handle_template_choice(update: Update, context: ContextTypes.DEFAULT_T
             chat_id=chat.id,
             text=(
                 "✅ <b>CV Generated Successfully!</b>\n\n"
-                "What would you like to do next?"
+                "What would you like to do next?\n"
+                "Or send /end to finish the session."
             ),
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
 
-        # Clean up temp file
         try:
             os.remove(file_path)
         except OSError:
             pass
 
-        return CHOOSE_TEMPLATE  # Stay in this state for follow-up actions
+        return CHOOSE_TEMPLATE
 
     except Exception as e:
         logger.error(f"CV generation error: {e}")
+        chat = _require_chat(update)
         await context.bot.send_message(
             chat_id=chat.id,
             text=(
@@ -439,14 +559,13 @@ async def handle_action_buttons(update: Update, context: ContextTypes.DEFAULT_TY
         raise ValueError("Action buttons require callback data.")
 
     if query_data == "action_template":
-        # Show template selection again
         keyboard = []
         for key, (label, _) in TEMPLATES.items():
             keyboard.append([InlineKeyboardButton(label, callback_data=f"tpl_{key}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text(
-            f"🎨 <b>Choose a different template:</b>",
+            "🎨 <b>Choose a different template:</b>",
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
@@ -461,7 +580,7 @@ async def handle_action_buttons(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text(
-            f"📝 <b>Choose a different version:</b>",
+            "📝 <b>Choose a different version:</b>",
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
@@ -469,12 +588,15 @@ async def handle_action_buttons(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif query_data == "action_new_jd":
         await query.edit_message_text(
-            "📋 <b>Paste the new Job Description:</b>",
+            "📋 <b>Provide a new Job Description:</b>\n\n"
+            "• 📝 Paste the JD text directly\n"
+            "• 📄 Upload the JD as a PDF file",
             parse_mode="HTML",
         )
         return PASTE_JD
 
     elif query_data == "action_restart":
+        _cleanup_user_files(user_data)
         user_data.clear()
         await query.edit_message_text(
             "🏠 <b>Starting over!</b>\n\n"
@@ -486,9 +608,24 @@ async def handle_action_buttons(update: Update, context: ContextTypes.DEFAULT_TY
     return CHOOSE_TEMPLATE
 
 
+async def end_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle /end — gracefully end session and clean up."""
+    user_data = _user_data(context)
+    _cleanup_user_files(user_data)
+    user_data.clear()
+    message = _require_message(update)
+    await message.reply_text(
+        "👋 <b>Session ended. Thanks for using ATS Resume Optimizer!</b>\n\n"
+        "Your data has been cleared. Send /start whenever you're ready for another session.",
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle /cancel — exit conversation."""
     user_data = _user_data(context)
+    _cleanup_user_files(user_data)
     user_data.clear()
     message = _require_message(update)
     await message.reply_text(
@@ -505,17 +642,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 <b>Commands:</b>
 /start — Begin a new session
-/cancel — Cancel current session
+/end — End current session & clear data
+/cancel — Cancel current step
 /help — Show this message
 
 <b>How to use:</b>
 1. Send /start
 2. Upload your CV (PDF or DOCX)
-3. Paste the Job Description
+3. Paste the Job Description — <i>or upload it as a PDF!</i>
 4. View your ATS score & suggestions
 5. Choose an optimized version
 6. Pick a template format
 7. Download your new CV!
+
+<b>Job Description formats accepted:</b>
+📝 Paste text directly
+📄 Upload as a PDF file
 
 <b>Templates available:</b>
 📄 1-Page ATS — Compact, keyword-dense
@@ -538,7 +680,6 @@ def create_bot() -> Application:
     """Create and configure the Telegram bot application."""
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Conversation handler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
         states={
@@ -546,6 +687,9 @@ def create_bot() -> Application:
                 MessageHandler(filters.Document.ALL, handle_cv_upload),
             ],
             PASTE_JD: [
+                # Accept PDF uploads as JD
+                MessageHandler(filters.Document.ALL, handle_jd_pdf_upload),
+                # Accept plain text as JD
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_jd_input),
             ],
             CHOOSE_VERSION: [
@@ -556,11 +700,16 @@ def create_bot() -> Application:
                 CallbackQueryHandler(handle_action_buttons, pattern=r"^action_"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel_command)],
+        fallbacks=[
+            CommandHandler("end", end_command),
+            CommandHandler("cancel", cancel_command),
+        ],
         allow_reentry=True,
     )
 
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("help", help_command))
+    # /end also works outside of an active conversation
+    app.add_handler(CommandHandler("end", end_command))
 
     return app

@@ -21,14 +21,39 @@ def _parse_resume_sections(resume_text: str) -> dict:
     Returns dict like {"Contact": "...", "Summary": "...", "Experience": "...", ...}
     """
     sections = {}
-    # Common section headers
-    headers = [
-        "CONTACT", "SUMMARY", "OBJECTIVE", "PROFESSIONAL SUMMARY",
-        "EXPERIENCE", "WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE",
-        "EDUCATION", "SKILLS", "TECHNICAL SKILLS", "PROJECTS",
-        "CERTIFICATIONS", "CERTIFICATES", "AWARDS", "ACHIEVEMENTS",
-        "LANGUAGES", "INTERESTS", "HOBBIES", "REFERENCES",
-    ]
+    alias_map = {
+        "CONTACT": "Contact",
+        "SUMMARY": "Professional Summary",
+        "OBJECTIVE": "Objective",
+        "PROFESSIONAL SUMMARY": "Professional Summary",
+        "PROFESSIONAL PROFILE": "Professional Summary",
+        "PROFILE": "Professional Summary",
+        "EXPERIENCE": "Experience",
+        "WORK EXPERIENCE": "Experience",
+        "PROFESSIONAL EXPERIENCE": "Experience",
+        "EMPLOYMENT HISTORY": "Experience",
+        "WORK HISTORY": "Experience",
+        "EDUCATION": "Education",
+        "SKILLS": "Skills",
+        "KEY SKILLS": "Skills",
+        "TECHNICAL SKILLS": "Technical Skills",
+        "CORE SKILLS": "Technical Skills",
+        "TOOLS & TECHNOLOGIES": "Technical Skills",
+        "TOOLS AND TECHNOLOGIES": "Technical Skills",
+        "TECHNICAL PROFICIENCY": "Technical Skills",
+        "PROJECTS": "Projects",
+        "CERTIFICATIONS": "Certifications",
+        "CERTIFICATES": "Certifications",
+        "AWARDS": "Awards",
+        "ACHIEVEMENTS": "Achievements",
+        "LANGUAGES": "Languages",
+        "INTERESTS": "Interests",
+        "HOBBIES": "Hobbies",
+        "REFERENCES": "References",
+        "KEYWORDS": "Keywords",
+        "RELEVANT KEYWORDS": "Keywords",
+    }
+    headers = list(alias_map.keys())
     pattern = r"(?i)^(" + "|".join(re.escape(h) for h in headers) + r")\s*:?\s*$"
 
     current_section = "Header"
@@ -40,15 +65,25 @@ def _parse_resume_sections(resume_text: str) -> dict:
         if match:
             # Save previous section
             if current_lines:
-                sections[current_section] = "\n".join(current_lines).strip()
-            current_section = match.group(1).title()
+                body = "\n".join(current_lines).strip()
+                if body:
+                    existing = sections.get(current_section, "")
+                    sections[current_section] = "\n\n".join(
+                        part for part in [existing, body] if part
+                    ).strip()
+            current_section = alias_map.get(match.group(1).upper(), match.group(1).title())
             current_lines = []
         else:
             current_lines.append(line)
 
     # Save last section
     if current_lines:
-        sections[current_section] = "\n".join(current_lines).strip()
+        body = "\n".join(current_lines).strip()
+        if body:
+            existing = sections.get(current_section, "")
+            sections[current_section] = "\n\n".join(
+                part for part in [existing, body] if part
+            ).strip()
 
     return sections
 
@@ -87,6 +122,13 @@ def _add_separator(doc: DocxDocument):
     run = para.add_run("─" * 70)
     run.font.size = Pt(6)
     run.font.color.rgb = RGBColor(180, 180, 180)
+
+
+def _strip_bullet_prefix(line: str) -> tuple[bool, str]:
+    """Return whether a line is a bullet and the cleaned text."""
+    cleaned = re.sub(r"^[\s\-\*\u2022\u25CF\u25AA\u25A0]+\s*", "", line).strip()
+    is_bullet = cleaned != line.strip() and bool(cleaned)
+    return is_bullet, cleaned if cleaned else line.strip()
 
 
 # ── Template 1: One-Page ATS ────────────────────────────────────────────────
@@ -132,7 +174,8 @@ def generate_one_page_ats(resume_text: str, filename: str = "cv_1page_ats.docx")
     section_order = ["Summary", "Professional Summary", "Objective",
                      "Skills", "Technical Skills",
                      "Experience", "Work Experience", "Professional Experience",
-                     "Education", "Projects", "Certifications", "Certificates"]
+                     "Education", "Projects", "Certifications", "Certificates",
+                     "Keywords"]
 
     for sec_name in section_order:
         if sec_name in sections:
@@ -193,7 +236,7 @@ def generate_two_page_detailed(resume_text: str, filename: str = "cv_2page_detai
                      "Experience", "Work Experience", "Professional Experience",
                      "Education", "Skills", "Technical Skills",
                      "Projects", "Certifications", "Certificates",
-                     "Awards", "Achievements", "Languages"]
+                     "Awards", "Achievements", "Languages", "Keywords"]
 
     for sec_name in section_order:
         if sec_name in sections:
@@ -263,7 +306,7 @@ def generate_modern_sidebar(resume_text: str, filename: str = "cv_modern_sidebar
 
     # LEFT SIDEBAR — Skills, Contact, Education, Certifications
     sidebar_sections = ["Skills", "Technical Skills", "Education",
-                        "Certifications", "Certificates", "Languages"]
+                        "Certifications", "Certificates", "Languages", "Keywords"]
     left_content = ""
     for sec_name in sidebar_sections:
         if sec_name in sections:
@@ -360,7 +403,7 @@ def generate_classic_clean(resume_text: str, filename: str = "cv_classic_clean.d
                      "Experience", "Work Experience", "Professional Experience",
                      "Skills", "Technical Skills",
                      "Education", "Projects",
-                     "Certifications", "Certificates", "Awards"]
+                     "Certifications", "Certificates", "Awards", "Keywords"]
 
     for sec_name in section_order:
         if sec_name in sections:
