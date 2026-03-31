@@ -50,49 +50,6 @@ UPLOAD_CV, PASTE_JD, CHOOSE_VERSION, CHOOSE_TEMPLATE = range(4)
 
 # ── Helper Functions ─────────────────────────────────────────────────────────
 
-def _score_emoji(score: float) -> str:
-    if score >= 8:
-        return "🟢"
-    elif score >= 6:
-        return "🟡"
-    else:
-        return "🔴"
-
-
-def _build_analysis_message(result: dict) -> str:
-    """Format the Gemini analysis result into a nice Telegram message."""
-    score = result["ats_score"]
-    emoji = _score_emoji(score)
-    status = "✅ PASS" if score >= ATS_PASS_THRESHOLD else "❌ NEEDS IMPROVEMENT"
-
-    msg = f"""
-{emoji} <b>ATS Score: {score}/10</b> — {status}
-
-━━━━━━━━━━━━━━━━━━━━
-
-✅ <b>Matched Keywords:</b>
-{', '.join(result['matched_keywords']) if result['matched_keywords'] else 'None found'}
-
-❌ <b>Missing Keywords:</b>
-{', '.join(result['missing_keywords']) if result['missing_keywords'] else 'All keywords matched!'}
-
-━━━━━━━━━━━━━━━━━━━━
-
-💡 <b>Suggestions:</b>
-"""
-    for i, suggestion in enumerate(result.get("suggestions", []), 1):
-        msg += f"\n{i}. {suggestion}"
-
-    if score < ATS_PASS_THRESHOLD:
-        msg += "\n\n⬇️ <b>Your score is below the threshold. Let me optimize your CV!</b>"
-        msg += "\n\n<b>Choose an optimized version:</b>"
-    else:
-        msg += "\n\n🎉 <b>Great score! You can still optimize further if you'd like.</b>"
-        msg += "\n\n<b>Choose an optimized version:</b>"
-
-    return msg
-
-
 def _safe_score(score: Any) -> float | None:
     try:
         value = float(score)
@@ -113,58 +70,12 @@ def _score_label(score: Any) -> str:
 def _score_emoji(score: Any) -> str:
     safe_score = _safe_score(score)
     if safe_score is None:
-        return "⚪"
+        return "[N/A]"
     if safe_score >= 8:
-        return "ðŸŸ¢"
+        return "[HIGH]"
     if safe_score >= 6:
-        return "ðŸŸ¡"
-    return "ðŸ”´"
-
-
-def _build_analysis_message(result: dict) -> str:
-    """Format the analysis result into a safe Telegram message."""
-    score = _safe_score(result.get("ats_score"))
-    effective_score = score if score is not None else 0.0
-    emoji = _score_emoji(effective_score)
-    status = "âœ… PASS" if effective_score >= ATS_PASS_THRESHOLD else "âŒ NEEDS IMPROVEMENT"
-
-    msg = f"""
-{emoji} <b>ATS Score: {_score_label(score)}</b> â€” {status}
-
-â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
-
-âœ… <b>Matched Keywords:</b>
-{', '.join(result['matched_keywords']) if result['matched_keywords'] else 'None found'}
-
-âŒ <b>Missing Keywords:</b>
-{', '.join(result['missing_keywords']) if result['missing_keywords'] else 'All keywords matched!'}
-
-â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
-
-ðŸ’¡ <b>Suggestions:</b>
-"""
-    for i, suggestion in enumerate(result.get("suggestions", []), 1):
-        msg += f"\n{i}. {suggestion}"
-
-    if effective_score < ATS_PASS_THRESHOLD:
-        msg += "\n\nâ¬‡ï¸ <b>Your score is below the threshold. Let me optimize your CV!</b>"
-        msg += "\n\n<b>Choose an optimized version:</b>"
-    else:
-        msg += "\n\nðŸŽ‰ <b>Great score! You can still optimize further if you'd like.</b>"
-        msg += "\n\n<b>Choose an optimized version:</b>"
-
-    return msg
-
-
-def _score_emoji(score: Any) -> str:
-    safe_score = _safe_score(score)
-    if safe_score is None:
-        return "\u26AA"
-    if safe_score >= 8:
-        return "\U0001F7E2"
-    if safe_score >= 6:
-        return "\U0001F7E1"
-    return "\U0001F534"
+        return "[MID]"
+    return "[LOW]"
 
 
 def _build_analysis_message(result: dict) -> str:
@@ -178,10 +89,10 @@ def _build_analysis_message(result: dict) -> str:
 {emoji} <b>ATS Score: {_score_label(score)}</b> - {status}
 
 <b>Matched Keywords:</b>
-{', '.join(result['matched_keywords']) if result['matched_keywords'] else 'None found'}
+{", ".join(result["matched_keywords"]) if result["matched_keywords"] else "None found"}
 
 <b>Missing Keywords:</b>
-{', '.join(result['missing_keywords']) if result['missing_keywords'] else 'All keywords matched!'}
+{", ".join(result["missing_keywords"]) if result["missing_keywords"] else "All keywords matched!"}
 
 <b>Suggestions:</b>
 """
@@ -196,18 +107,6 @@ def _build_analysis_message(result: dict) -> str:
         msg += "\n\n<b>Choose an optimized version:</b>"
 
     return msg
-
-
-def _score_emoji(score: Any) -> str:
-    safe_score = _safe_score(score)
-    if safe_score is None:
-        return "[N/A]"
-    if safe_score >= 8:
-        return "[HIGH]"
-    if safe_score >= 6:
-        return "[MID]"
-    return "[LOW]"
-
 
 def _require_message(update: Update) -> Message:
     """Return the message for handlers that only accept message updates."""
